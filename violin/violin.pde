@@ -6,52 +6,32 @@ Minim minim;
 AudioOutput out;
 Serial myPort;
 
-// 各音階の周波数（インデックス0〜17に対応）
 float[] frequencies = {
-  185.00,  // 0  ファ#_
-  196.00,  // 1  ソ_
-  220.00,  // 2  ラ_
-  246.94,  // 3  シ_
-  277.18,  // 4  レ♭
-  293.66,  // 5  レ
-  329.63,  // 6  ミ
-  349.23,  // 7  ファ
-  369.99,  // 8  ファ#
-  392.00,  // 9  ソ
-  440.00,  // 10 ラ
-  493.88,  // 11 シ
-  554.37,  // 12 レ♭~
-  587.33,  // 13 レ~
-  659.25,  // 14 ミ~
-  739.99,  // 15 ファ#~
-  783.99,  // 16 ソ~
-  880.00   // 17 ラ~
+  185.00, 196.00, 220.00, 246.94, 277.18, 293.66,
+  329.63, 349.23, 369.99, 392.00, 440.00, 493.88,
+  554.37, 587.33, 659.25, 739.99, 783.99, 880.00
 };
 
-// バイオリン音色の倍音構成（各倍音の振幅）
 float[] vlnAmps = {0.31, 0.14, 0.04, 0.1, 0.06, 0.06, 0.21, 0.07};
 
-// 音量（0.0〜1.0）
 float volume = 0.8;
-
-// ビブラートの速さ（Hz）と深さ（セント）
 float vibratoRate  = 5.5;
 float vibratoDepth = 25.0;
 
-// 各音階に対応するオシレーターの配列
 Oscil[] waves = new Oscil[frequencies.length];
 
-// 現在再生中の音符の情報
-int currentNote     = -1;   // 現在の音階インデックス
-int currentDuration = 0;    // 現在の音符の長さ（ミリ秒）
-int noteStartTime   = 0;    // 音符の再生開始時刻（ミリ秒）
-boolean notePlaying = false; // 音符が再生中かどうか
+int currentNote     = -1;
+int currentDuration = 0;
+int noteStartTime   = 0;
+boolean notePlaying = false;
 
-// 倍音合成でバイオリン音色のオシレーターを生成する関数
+float bpm = 100;
+float beatS;
+int bar = 1;
+float beat = -1;
+
 Oscil generateWave(float freq) {
   float[] wave = new float[1024];
-
-  // 各サンプル点で倍音を足し合わせる
   for (int i = 0; i < 1024; i++) {
     float sum = 0;
     for (int n = 1; n <= vlnAmps.length; n++) {
@@ -59,28 +39,18 @@ Oscil generateWave(float freq) {
     }
     wave[i] = sum;
   }
-
-  // 波形を-1.0〜1.0に正規化する
   float maxVal = 0;
   for (float v : wave) if (abs(v) > maxVal) maxVal = abs(v);
   if (maxVal > 0) {
     for (int i = 0; i < wave.length; i++) wave[i] /= maxVal;
   }
-
-  // 波形テーブルからオシレーターを生成して返す
   Wavetable table = new Wavetable(wave);
   return new Oscil(freq, volume, table);
 }
 
-// オシレーターにビブラートをかける関数
 void applyVibrato(Oscil oscil, float freq, float rate, float depth) {
-  // ビブラートの深さをセントからHzに変換
   float depthHz = freq * (pow(2, depth / 1200.0) - 1);
-
-  // LFO（低周波オシレーター）を生成
   Oscil lfo = new Oscil(rate, depthHz, Waves.SINE);
-
-  // 基準周波数にLFOを足してオシレーターの周波数に接続
   Constant baseFreq = new Constant(freq);
   Summer summer = new Summer();
   baseFreq.patch(summer);
@@ -89,63 +59,121 @@ void applyVibrato(Oscil oscil, float freq, float rate, float depth) {
 }
 
 void setup() {
-  size(400, 200);
+  size(600, 400);
   minim = new Minim(this);
   out = minim.getLineOut();
 
-  // 全音階分のオシレーターを生成してビブラートをかける
+  beatS = 60.0 / bpm;
+
   for (int i = 0; i < frequencies.length; i++) {
     waves[i] = generateWave(frequencies[i]);
     applyVibrato(waves[i], frequencies[i], vibratoRate, vibratoDepth);
   }
 
-  // 使用可能なシリアルポートを表示して接続
   printArray(Serial.list());
   myPort = new Serial(this, Serial.list()[1], 9600);
-  myPort.bufferUntil('\n'); // 改行まで受信バッファに貯める
+  myPort.bufferUntil('\n');
 }
 
 void draw() {
-  background(30);
-  fill(255);
-  textAlign(CENTER, CENTER);
-  textSize(20);
+  background(255);
+  conductor_drawData(beatS, bar, beat);
+  volumeBar(volume * 100);
 
-  if (notePlaying) {
-    // 音符の長さを超えたら音を止める
-    if (millis() - noteStartTime >= currentDuration) {
-      waves[currentNote].unpatch(out);
-      notePlaying = false;
-    }
-    // 現在鳴っている音階と周波数を表示
-    text("Note: " + currentNote + "  (" + frequencies[currentNote] + " Hz)", width/2, height/2);
-  } else {
-    text("waiting...", width/2, height/2);
+  if (notePlaying && millis() - noteStartTime >= currentDuration) {
+    waves[currentNote].unpatch(out);
+    notePlaying = false;
   }
 }
 
-// シリアルデータを受信したときに呼ばれる関数
+void conductor_drawData(float beatS, int bar, float beat) {
+  int bpm = (int)(60 / beatS);
+
+  fill(0);
+  textSize(height * 0.15);
+  textAlign(CENTER);
+  text("BPM:" + bpm, width / 2, height * 1/5);
+
+  fill(0);
+  textSize(height * 0.12);
+  textAlign(CENTER);
+  text("Bar:" + bar, width / 2, height * 2/5);
+
+  for (int i = 0; i < 4; i++) {
+    if ((int)beat == i) {
+      fill(0);
+    } else {
+      fill(255);
+    }
+    stroke(0);
+    circle(width * (i+1)/5, height * 3/5, height * 0.1);
+  }
+}
+
+void volumeBar(float volumeRate) {
+  float barX = width * 0.1;
+  float barY = height * 0.82;
+  float barW = width * 0.8;
+  float barH = height * 0.06;
+
+  fill(200);
+  noStroke();
+  rect(barX, barY, barW, barH, 5);
+
+  float ratio = constrain(volumeRate / 100.0, 0, 1);
+  if (ratio > 0.7) fill(220, 50, 50);
+  else if (ratio > 0.4) fill(50, 180, 50);
+  else fill(50, 130, 220);
+  rect(barX, barY, barW * ratio, barH, 5);
+
+  fill(0);
+  textSize(height * 0.05);
+  textAlign(CENTER);
+  text((int)volumeRate + "%", width / 2, height * 0.97);
+}
+
 void serialEvent(Serial port) {
   String data = port.readStringUntil('\n');
   if (data == null) return;
   data = trim(data);
+  
+  if (data.startsWith("T,")) {
+  bpm = float(split(data, ',')[1]);
+  beatS = 60.0 / bpm;
+  return;
+  } 
 
-  // "音階インデックス,音符の長さ" の形式でパース
+  if (data.startsWith("V,")) {
+    float v = float(split(data, ',')[1]);
+    volume = constrain(v / 100.0, 0.0, 1.0);
+    for (int i = 0; i < waves.length; i++) {
+      waves[i].setAmplitude(volume);
+    }
+    return;
+  }
+  // 拍信号
+  if (data.equals("B")) {
+    beat++;
+    if (beat >= 4) {
+      beat = 0;
+      bar++;
+    }
+    return;
+  }
+
+  // 音符データ
   String[] parts = split(data, ',');
   if (parts.length != 2) return;
 
   int note     = int(parts[0]);
   int duration = int(parts[1]);
 
-  // インデックスが範囲外なら無視
   if (note < 0 || note >= frequencies.length) return;
 
-  // 前の音を止める
   if (notePlaying) {
     waves[currentNote].unpatch(out);
   }
 
-  // 新しい音を鳴らす
   currentNote     = note;
   currentDuration = duration;
   noteStartTime   = millis();
